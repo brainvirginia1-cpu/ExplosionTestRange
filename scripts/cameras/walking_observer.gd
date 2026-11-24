@@ -1,5 +1,6 @@
 extends CharacterBody3D
 
+const Controls := preload("res://scripts/core/control_bindings.gd")
 const Ground := preload("res://scripts/terrain/range_ground.gd")
 const Device := preload("res://scripts/devices/trial_device.gd")
 const EYE_HEIGHT := 1.65
@@ -85,10 +86,10 @@ func _physics_process(delta: float) -> void:
 	var jump := false
 	if health > 0.0 and get_window().has_focus():
 		direction = Vector2(
-			float(Input.is_physical_key_pressed(KEY_D)) - float(Input.is_physical_key_pressed(KEY_A)),
-			float(Input.is_physical_key_pressed(KEY_S)) - float(Input.is_physical_key_pressed(KEY_W)))
-		sprint = Input.is_physical_key_pressed(KEY_SHIFT)
-		jump = Input.is_physical_key_pressed(KEY_J)
+			float(Controls.pressed("right")) - float(Controls.pressed("left")),
+			float(Controls.pressed("backward")) - float(Controls.pressed("forward")))
+		sprint = Controls.pressed("sprint")
+		jump = Controls.pressed("jump")
 	var heading := Basis(Vector3.UP,camera.rotation.y)
 	var leg_damage := maxf(_injuries[2],_injuries[4])
 	var travel := heading * Vector3(direction.x,0,direction.y).normalized() * (7.2 if sprint else 3.8)

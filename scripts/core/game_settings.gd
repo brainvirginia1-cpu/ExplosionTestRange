@@ -4,13 +4,14 @@ const PATH := "user://range_settings.cfg"
 const RENDER_SCALES := [0.67, 0.80, 1.0, 1.25, 1.50]
 const FRAME_LIMITS := [0, 30, 60, 120, 144]
 const LANGUAGES := ["ru", "en"]
+const Controls := preload("res://scripts/core/control_bindings.gd")
 const DEFAULTS := {
 	"volume": 0.78, "thunder_volume": 1.0,
 	"fullscreen": false, "vsync": true, "frame_limit": 0, "render_scale": 2,
 	"msaa": 1, "debanding": false,
 	"shadow_quality": 2, "cloud_shadows": true, "ao": true, "ssil": true, "glow": true,
 	"effect_quality": 1, "adaptive_effects": true, "camera_kick": false,
-	"language": "ru",
+	"language": "ru", "bindings": Controls.DEFAULTS,
 }
 const LEGACY_VISUALS := {
 	"shadow_quality": 0, "cloud_shadows": false, "ao": false, "ssil": false, "glow": false,
@@ -35,6 +36,7 @@ static func read() -> Dictionary:
 		values[item[0]] = clampi(values[item[0]], 0, item[1] - 1)
 	if not values["language"] in LANGUAGES:
 		values["language"] = DEFAULTS["language"]
+	values["bindings"] = Controls.normalize(values["bindings"])
 	return values
 
 static func save(values: Dictionary) -> Error:
@@ -44,6 +46,7 @@ static func save(values: Dictionary) -> Error:
 	return config.save(PATH)
 
 static func apply(values: Dictionary, window: Window) -> void:
+	Controls.apply(values["bindings"])
 	if TranslationServer.get_locale() != values["language"]:
 		TranslationServer.set_locale(values["language"])
 	_apply_volume(&"Master", values["volume"])

@@ -6,6 +6,7 @@ signal settings_changed(values: Dictionary)
 
 const Settings := preload("res://scripts/core/game_settings.gd")
 const Terminal := preload("res://scripts/ui/terminal_theme.gd")
+const Controls := preload("res://scripts/core/control_bindings.gd")
 
 var _values := {}
 var _pause_actions: VBoxContainer
@@ -13,6 +14,8 @@ var _continue: Button
 var _settings: VBoxContainer
 var _status: Label
 var _tabs: TabContainer
+var _binding_buttons: Dictionary[String, Button] = {}
+var _capture_action := ""
 var _pause_available := false
 var dock: Control
 var _center: CenterContainer
@@ -65,6 +68,7 @@ func _align_dock() -> void:
 	_center.size = dock.size
 
 func open_pause() -> void:
+	_cancel_binding()
 	_pause_available = true
 	_settings.hide()
 	_pause_actions.show()
@@ -81,6 +85,7 @@ func open_settings() -> void:
 	_tabs.get_tab_bar().grab_focus()
 
 func close() -> void:
+	_cancel_binding()
 	hide()
 	_pause_available = false
 	dismissed.emit()
@@ -95,6 +100,35 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	if visible and event.is_action_pressed("ui_cancel") and not event.is_echo():
 		get_viewport().set_input_as_handled()
 		_back()
+
+func _input(event: InputEvent) -> void:
+	if _capture_action.is_empty() or not visible or not event is InputEventKey or not event.pressed:
+		return
+	get_viewport().set_input_as_handled()
+	if event.echo:
+		return
+	var code: int = event.physical_keycode
+	if code == KEY_ESCAPE:
+		_cancel_binding()
+		_status.text = ""
+		return
+	if code == KEY_NONE or OS.get_keycode_string(code).is_empty():
+		return
+	var action := _capture_action
+	var bindings: Dictionary = _values["bindings"].duplicate()
+	var previous_action: Variant = bindings.find_key(code)
+	var swap: bool = previous_action != null and previous_action != action
+	if swap and bindings[action] == KEY_ESCAPE:
+		_status.text = "Выберите свободную клавишу"
+		return
+	if swap:
+		bindings[previous_action] = bindings[action]
+	bindings[action] = code
+	_cancel_binding()
+	_update(bindings, "bindings")
+	if swap and _status.text == "Сохранено":
+		_status.text = "Клавиши поменялись местами"
+	_refresh_bindings()
 
 func _build_settings() -> void:
 	_label(_settings, "НАСТРОЙКИ", 27)
@@ -133,12 +167,55 @@ func _build_settings() -> void:
 	_volume(sound, "thunder_volume", "Раскаты грома")
 	var language := _tab(_tabs, "Язык")
 	_options(language, "language", "Язык", ["Русский", "English"])
+	var controls := _tab(_tabs, "Управление")
+	_build_bindings(controls)
+	_tabs.tab_changed.connect(func(_index: int) -> void:
+		_cancel_binding()
+		_status.text = ""
+		if dock != null:
+			_align_dock.call_deferred())
 	var footer := HBoxContainer.new()
 	_settings.add_child(footer)
 	_status = _label(footer, "", 14)
 	_status.modulate = Terminal.ACCENT
 	_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_button(footer, "Назад", _back)
+
+func _build_bindings(parent: Container) -> void:
+	var hint := _label(parent, "Выберите действие и нажмите клавишу. Esc отменяет назначение.", 14)
+	hint.modulate = Terminal.MUTED
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	for action: String in Controls.LABELS:
+		var row := _row(parent, Controls.LABELS[action])
+		var button := _button(row, "", _begin_binding.bind(action))
+		button.custom_minimum_size.x = 138
+		_binding_buttons[action] = button
+	var mouse := _label(parent, "Мышь: ЛКМ — выбрать точку, ПКМ — обзор, колесо — зум.", 14)
+	mouse.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	mouse.modulate = Terminal.MUTED
+	_button(parent, "Сбросить клавиши", _reset_bindings)
+	_refresh_bindings()
+
+func _begin_binding(action: String) -> void:
+	_cancel_binding()
+	_capture_action = action
+	_binding_buttons[action].text = "Нажмите клавишу"
+	_status.text = ""
+
+func _cancel_binding() -> void:
+	if _capture_action.is_empty():
+		return
+	_capture_action = ""
+	_refresh_bindings()
+
+func _refresh_bindings() -> void:
+	for action: String in _binding_buttons:
+		_binding_buttons[action].text = Controls.key_label(_values["bindings"][action])
+
+func _reset_bindings() -> void:
+	_cancel_binding()
+	_update(Controls.DEFAULTS.duplicate(),"bindings")
+	_refresh_bindings()
 
 func _tab(tabs: TabContainer, title: String) -> VBoxContainer:
 	var scroll := ScrollContainer.new()

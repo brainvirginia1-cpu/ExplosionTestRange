@@ -21,6 +21,8 @@ The main menu shows a paused 3D explosion. Open the Graphics tab to see changes 
 
 ## Controls
 
+Rebind the default keys under **Settings → Controls** in the main menu or the pause menu.
+
 | Input | Action |
 | --- | --- |
 | Left click on ground | Set the source or use the selected editor tool |

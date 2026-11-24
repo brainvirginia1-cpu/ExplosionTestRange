@@ -6,6 +6,7 @@ const MIN_FOV := 10.0
 @export var sensitivity: float = 0.0025
 var manual_enabled := true
 var walking := false
+const Controls := preload("res://scripts/core/control_bindings.gd")
 const Ground := preload("res://scripts/terrain/range_ground.gd")
 var ground: Ground
 @onready var _normal_fov := fov
@@ -47,13 +48,13 @@ func _process(delta: float) -> void:
 	if walking or not get_window().has_focus():
 		return
 	var movement := Vector3(
-		float(Input.is_physical_key_pressed(KEY_D)) - float(Input.is_physical_key_pressed(KEY_A)),
-		float(Input.is_physical_key_pressed(KEY_E)) - float(Input.is_physical_key_pressed(KEY_Q)),
-		float(Input.is_physical_key_pressed(KEY_S)) - float(Input.is_physical_key_pressed(KEY_W)))
-	var multiplier := 6.5 if Input.is_physical_key_pressed(KEY_SHIFT) else 1.0
+		float(Controls.pressed("right")) - float(Controls.pressed("left")),
+		float(Controls.pressed("ascend")) - float(Controls.pressed("descend")),
+		float(Controls.pressed("backward")) - float(Controls.pressed("forward")))
+	var multiplier := 6.5 if Controls.pressed("sprint") else 1.0
 	var altitude := maxf(0.0,position.y-Ground.base_height(position.x,position.z))
 	multiplier *= 1.0+altitude*0.014
-	if Input.is_physical_key_pressed(KEY_SHIFT):
+	if Controls.pressed("sprint"):
 		multiplier += 18.0*smoothstep(120.0,1900.0,altitude)
 	var offset := (basis.x * movement.x + Vector3.UP * movement.y + basis.z * movement.z)
 	position += offset.normalized() * speed * multiplier * real_delta

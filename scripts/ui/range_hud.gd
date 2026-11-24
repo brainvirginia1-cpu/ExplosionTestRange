@@ -201,7 +201,7 @@ func observer_status(active: bool, health: float, third_person: bool, injury: St
 	_observer.text = "Погиб · N возродиться" if health <= 0.0 else tr("Здоровье %d%% · B %s") % [ceili(health),tr("1-е лицо" if third_person else "3-е лицо")]
 	if health > 0.0 and (not reaction.is_empty() or not injury.is_empty()):
 		_observer.text = "%d%% · %s" % [ceili(health),tr(reaction if not reaction.is_empty() else injury)]
-	_observer.tooltip_text = "WASD — ходьба, Shift — бег, J — прыжок"
+	_observer.tooltip_text = "Клавиши можно изменить в настройках управления."
 
 func altitude(meters: float) -> void:
 	_altitude.text = tr("Высота %.2f км") % (meters/1000.0) if meters >= 1000.0 else tr("Высота %.0f м") % meters

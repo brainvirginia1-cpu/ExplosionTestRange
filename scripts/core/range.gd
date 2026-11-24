@@ -6,6 +6,7 @@ const Backdrop := preload("res://scripts/terrain/backdrop.gd")
 const Device := preload("res://scripts/devices/trial_device.gd")
 const Director := preload("res://scripts/cameras/camera_director.gd")
 const Scenario := preload("res://scripts/editor/scenarios.gd")
+const Controls := preload("res://scripts/core/control_bindings.gd")
 const Settings := preload("res://scripts/core/game_settings.gd")
 const Record := preload("res://scripts/core/trial_record.gd")
 const Burst := preload("res://scripts/explosions/burst.gd")
@@ -179,7 +180,9 @@ func apply_graphics(options: Dictionary) -> void:
 		camera.v_offset = 0.0
 
 func _input(event: InputEvent) -> void:
-	if preview_only or not event.is_action_pressed("ui_cancel") or event.is_echo():
+	if preview_only or not event is InputEventKey or not event.pressed or event.echo:
+		return
+	if Controls.action_for(event) != "pause":
 		return
 	get_viewport().set_input_as_handled()
 	_was_paused = get_tree().paused
@@ -204,31 +207,31 @@ func _exit_tree() -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
-		match event.physical_keycode:
-			KEY_SPACE:
+		match Controls.action_for(event):
+			"detonate":
 				run_trial()
 				get_viewport().set_input_as_handled()
-			KEY_R:
+			"reset":
 				reset_trial()
 				get_viewport().set_input_as_handled()
-			KEY_V:
+			"observer":
 				_director.select(Director.Mode.FREE if camera.walking else Director.Mode.WALK)
 				get_viewport().set_input_as_handled()
-			KEY_B:
+			"view":
 				if camera.walking:
 					_walker.third_person = not _walker.third_person
 					get_viewport().set_input_as_handled()
-			KEY_H:
+			"injuries":
 				_toggle_injuries()
 				get_viewport().set_input_as_handled()
-			KEY_N:
+			"respawn":
 				if camera.walking and _walker.health <= 0.0:
 					_respawn_observer()
 					get_viewport().set_input_as_handled()
-			KEY_Y:
+			"replay":
 				replay_trial()
 				get_viewport().set_input_as_handled()
-			KEY_T:
+			"slow":
 				_toggle_slow()
 				get_viewport().set_input_as_handled()
 	elif event is InputEventMouseButton and event.pressed:
