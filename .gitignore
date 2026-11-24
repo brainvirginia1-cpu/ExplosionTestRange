@@ -2,6 +2,7 @@
 __pycache__/
 /verification/
 /assets/cloud/
+/docs/*.import
 *.blend1
 
 # Local and generated outputs
@@ -11,4 +12,3 @@ __pycache__/
 *.log
 .env
 .env.*
-/locale/*.translation
