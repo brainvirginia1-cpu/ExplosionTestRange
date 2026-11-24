@@ -1,0 +1,14 @@
+.godot/
+__pycache__/
+/verification/
+/assets/cloud/
+*.blend1
+
+# Local and generated outputs
+*.zip
+*.exe
+*.pck
+*.log
+.env
+.env.*
+/locale/*.translation

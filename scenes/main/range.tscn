@@ -1,0 +1,89 @@
+[gd_scene load_steps=14 format=3]
+
+[ext_resource type="Script" path="res://scripts/cameras/free_camera.gd" id="1"]
+[ext_resource type="Shader" path="res://assets/shaders/soil.gdshader" id="2"]
+[ext_resource type="Script" path="res://scripts/terrain/backdrop.gd" id="3"]
+[ext_resource type="Script" path="res://scripts/terrain/range_ground.gd" id="7"]
+[ext_resource type="Shader" path="res://assets/shaders/desert_sky.gdshader" id="8"]
+
+[ext_resource type="Script" path="res://scripts/core/range.gd" id="4"]
+
+[ext_resource type="Shader" path="res://assets/shaders/range_occlusion.gdshader" id="9"]
+
+[sub_resource type="ShaderMaterial" id="RangeOcclusion"]
+resource_local_to_scene = true
+render_priority = -120
+shader = ExtResource("9")
+
+[sub_resource type="QuadMesh" id="ScreenQuad"]
+size = Vector2(2, 2)
+
+[sub_resource type="ShaderMaterial" id="SkyMat"]
+shader = ExtResource("8")
+
+[sub_resource type="Sky" id="Sky"]
+sky_material = SubResource("SkyMat")
+
+[sub_resource type="Environment" id="Environment"]
+background_mode = 2
+sky = SubResource("Sky")
+ambient_light_source = 2
+ambient_light_color = Color(0.82, 0.82, 0.82, 1)
+ambient_light_energy = 0.55
+tonemap_mode = 2
+glow_enabled = true
+ssao_enabled = true
+ssao_radius = 0.92
+ssao_intensity = 1.65
+ssao_power = 1.45
+ssao_detail = 0.33
+ssao_horizon = 0.10
+ssao_sharpness = 0.92
+ssao_light_affect = 0.14
+ssil_enabled = true
+ssil_radius = 4.0
+ssil_intensity = 0.30
+ssil_sharpness = 0.92
+ssil_normal_rejection = 1.0
+glow_intensity = 0.35
+glow_bloom = 0.06
+
+[sub_resource type="ShaderMaterial" id="Soil"]
+shader = ExtResource("2")
+
+[node name="Range" type="Node3D"]
+script = ExtResource("4")
+
+[node name="Environment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment")
+
+[node name="Occlusion" type="MeshInstance3D" parent="."]
+material_override = SubResource("RangeOcclusion")
+cast_shadow = 0
+extra_cull_margin = 2000000.0
+ignore_occlusion_culling = true
+mesh = SubResource("ScreenQuad")
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+rotation_degrees = Vector3(-32, -128, 0)
+light_color = Color(1, 0.85, 0.67, 1)
+light_energy = 1.35
+shadow_enabled = true
+directional_shadow_max_distance = 420.0
+
+[node name="Ground" type="StaticBody3D" parent="."]
+collision_layer = 1
+script = ExtResource("7")
+
+[node name="Backdrop" type="MeshInstance3D" parent="."]
+script = ExtResource("3")
+material_override = SubResource("Soil")
+
+[node name="Camera" type="Camera3D" parent="."]
+position = Vector3(14, 8.1, 21)
+rotation_degrees = Vector3(-16, 30, 0)
+current = true
+fov = 56.0
+far = 2400000.0
+near = 0.25
+script = ExtResource("1")
