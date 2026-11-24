@@ -306,9 +306,9 @@ func _process(delta: float) -> void:
 			var tremor := sin(effect.age*20.0)*exp(-effect.age*1.65)
 			_shake = maxf(_shake,absf(tremor)*0.55*(1.0-smoothstep(0.0,_heave_radius*2.0,distance)))
 		return
-	var crest := effect.visual_radius()
+	var crest := effect.rendered_front_radius()
 	var width := clampf(3.4 + crest * 0.046, 3.4, 96.0)
-	ground.show_wave(origin, crest, profile.front_radius, 1.0-effect.visual_strength(), width)
+	ground.show_wave(origin, crest, profile.front_radius, 1.0-effect.rendered_front_impulse(), width)
 	var pos := effect.global_position + Vector3.UP
 	var viewport_rect := get_viewport().get_visible_rect().grow(115.0)
 	var on_screen := not camera.is_position_behind(pos) and viewport_rect.has_point(camera.unproject_position(pos))

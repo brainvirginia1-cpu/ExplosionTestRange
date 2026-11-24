@@ -78,6 +78,8 @@ func _ready() -> void:
 	terrain_craters.resize(16)
 	_density.set_shader_parameter("terrain_craters",terrain_craters)
 	_density.set_shader_parameter("terrain_crater_count",crater_count)
+	_material.set_shader_parameter("terrain_craters",terrain_craters)
+	_material.set_shader_parameter("terrain_crater_count",crater_count)
 	if occlusion_material != null:
 		occlusion_material.set_shader_parameter("cloud_field",_atlas.get_texture())
 		occlusion_material.set_shader_parameter("sun_direction",sun_direction.normalized())
@@ -125,7 +127,7 @@ func clear_shadow() -> void:
 		occlusion_material.set_shader_parameter("cloud_strength",0.0)
 		occlusion_material.set_shader_parameter("cloud_field",null)
 
-func advance(age: float, eye_distance: float) -> void:
+func advance(age: float, eye_distance: float, front_radius: float, front_strength: float) -> void:
 	if age <= 0.0 or age >= profile.cloud_lifetime():
 		hide()
 		return
@@ -135,7 +137,10 @@ func advance(age: float, eye_distance: float) -> void:
 	var motion_time := profile.heat_duration*lerpf(2.10,3.28,profile.visual_growth)
 	var transition := 1.0-exp(-heat_age/motion_time)
 	var forming_time := profile.lifetime*0.72
-	var motion_age := minf(heat_age,forming_time)+maxf(heat_age-forming_time,0.0)/profile.cloud_linger
+	var late_age := maxf(heat_age-forming_time,0.0)
+	var settling_time := profile.lifetime*0.18
+	var slowdown := late_age-settling_time*(1.0-exp(-late_age/settling_time))
+	var motion_age := heat_age-(1.0-1.0/profile.cloud_linger)*slowdown
 	var phase := 3.2*transition+8.8*motion_age/(profile.lifetime-ignition_delay)
 	var spray := smoothstep(0.0,ignition_delay,age) if thermal else 0.0
 	var ignition := smoothstep(0.0,0.09,heat_age) if thermal else 0.0
@@ -151,7 +156,8 @@ func advance(age: float, eye_distance: float) -> void:
 		_density.set_shader_parameter("ignition_form",Vector3(expansion,presence,core_heat))
 	if thermal:
 		var opening_time := maxf(0.22,profile.fire_radius*0.90/CLOUD_TRAVEL_SPEED)
-		thermal_formation = smoothstep(0.0,opening_time,heat_age)
+		var opening := 4.4*heat_age/opening_time
+		thermal_formation = 1.0-(1.0+opening)*exp(-opening)
 		var glow := exp(-heat_age/(0.55+profile.heat_duration*0.93))
 		_density.set_shader_parameter("thermal_shape",Vector4(spray,ignition,glow,thermal_lift))
 		_density.set_shader_parameter("thermal_formation",thermal_formation)
@@ -166,7 +172,7 @@ func advance(age: float, eye_distance: float) -> void:
 	var style := profile.visual_growth
 	var crown := 0.0 if thermal else smoothstep(0.34,0.97,style)*(0.24 if underground else 1.0)
 	var lift := log(1.0 + phase)
-	var spread := 1.0 - exp(-phase * 3.0)
+	var spread := 1.0-0.74*exp(-phase*3.0)-0.26*exp(-phase*0.83)
 	var unit := profile.fire_radius / 15.0 * lerpf(1.25,2.05,style)
 	var width := (4.0+25.0*spread+10.0*lift)*unit*lerpf(0.97,1.03,_variation.x)
 	var top := (5.0+22.0*spread+27.0*lift)*unit
@@ -194,11 +200,6 @@ func advance(age: float, eye_distance: float) -> void:
 	# Limit screen opacity as well as local density: long sightlines can otherwise
 	# leave a white ribbon even after the smoke has been diluted.
 	var opacity := maxf(survival,1.0-smoothstep(0.18,profile.heat_duration*1.7,heat_age))
-	visible = opacity > 0.001
-	if not visible:
-		if occlusion_material != null:
-			occlusion_material.set_shader_parameter("cloud_strength",0.0)
-		return
 	var spread_amount := (1.0-exp(-exposure*0.65))*exp(-mixing*0.40)
 	var wind_spread := Vector2(1.0+0.94*spread_amount,1.0+0.39*spread_amount)
 	var direction := wind.normalized().abs()
@@ -207,8 +208,11 @@ func advance(age: float, eye_distance: float) -> void:
 	var half_span := envelope*width+displacement.abs()*0.59
 	var dust_depth := maxf(0.70,profile.dust_height*(2.75 if profile.thermonuclear_visual else 2.4))
 	if profile.ground_dust > 0.0:
-		var spread_progress := smoothstep(0.0,16.0,heat_age)*(1.0-0.45*exp(-heat_age/34.0))
-		var dust_radius := minf(width*0.89,profile.fire_radius*lerpf(7.0,18.0,profile.ground_dust)*spread_progress)
+		var quick_spread := 1.0-exp(-heat_age/6.0)
+		var slow_spread := 1.0-exp(-heat_age/27.0)
+		var spread_progress := 0.75*quick_spread*quick_spread+0.25*slow_spread*slow_spread
+		var target_radius := profile.fire_radius*lerpf(7.0,18.0,profile.ground_dust)*spread_progress
+		var dust_radius := _soft_limit(target_radius,width*0.89)
 		var settling := 1.0-smoothstep(0.14,0.76,cloud_life)
 		var dust_opacity := lerpf(0.65,2.40,profile.ground_dust)*settling*smoothstep(0.30,3.0,heat_age)
 		dust_opacity *= 1.0-float(conditions.y)*0.58
@@ -225,15 +229,19 @@ func advance(age: float, eye_distance: float) -> void:
 	var far_corner := Vector3(half_span.x+absf(shifted.x),
 		maxf(top,absf(low_y-_origin.y)),half_span.y+absf(shifted.y))
 	var spread_age := age if thermal else heat_age
-	# The aerosol also changes shape at ignition, so reserve extra room for that motion.
 	var travel_speed := CLOUD_TRAVEL_SPEED*(0.93 if thermal else 1.0)
-	var reach := travel_speed*spread_age
+	# Give each size its own opening. Integrate the ramp so the envelope's
+	# expansion rate always stays within the visual travel limit.
+	var opening_rate := 0.18+0.51*style+0.31*pow(style,12.0)
+	var opening_time := 0.62
+	var opening_delay := (1.0-opening_rate)*opening_time*(1.0-exp(-spread_age/opening_time))
+	var reach := travel_speed*(spread_age-opening_delay)
 	if reach <= 0.0:
 		hide()
 		return
 	var ratio := reach/maxf(far_corner.length(),0.001)
-	# Ease out of the speed limit as the volume approaches its authored size.
-	var travel_scale := ratio if ratio <= 0.88 else 1.0-pow(maxf(1.12-ratio,0.0),2.0)/0.48
+	# Blend the travel limit with the authored size over a wider interval.
+	var travel_scale := _soft_limit(ratio,1.0)
 	shifted *= travel_scale
 	half_span *= travel_scale
 	displacement *= travel_scale
@@ -245,6 +253,13 @@ func advance(age: float, eye_distance: float) -> void:
 	var box_max := _origin + Vector3(shifted.x+half_span.x,top,shifted.y+half_span.y)
 	global_position = (box_max + box_min)*0.5
 	scale = box_max-box_min
+	var cloud_bounds := AABB(box_min,scale)
+	var wake_bounds := _update_wake(age,heat_age,front_radius,front_strength)
+	var render_bounds := cloud_bounds.merge(wake_bounds) if wake_bounds.has_volume() else cloud_bounds
+	visible = opacity > 0.001 or wake_bounds.has_volume()
+	custom_aabb = AABB((render_bounds.position-box_min)/scale-Vector3.ONE*0.5,render_bounds.size/scale)
+	_material.set_shader_parameter("proxy_min",render_bounds.position)
+	_material.set_shader_parameter("proxy_max",render_bounds.end)
 	var ground_level := (_origin.y-box_min.y)/scale.y
 	_density.set_shader_parameter("terrain_rect",Vector4(box_min.x,box_min.z,scale.x,scale.z))
 	_density.set_shader_parameter("terrain_vertical",Vector3(box_min.y,scale.y,dust_depth))
@@ -289,7 +304,7 @@ func advance(age: float, eye_distance: float) -> void:
 	_material.set_shader_parameter("ground_level",ground_level)
 	_material.set_shader_parameter("flame_height",flame_height)
 	_material.set_shader_parameter("cap_fire",cap_fire)
-	_atlas.render_target_update_mode = SubViewport.UPDATE_ONCE
+	_atlas.render_target_update_mode = SubViewport.UPDATE_ONCE if opacity > 0.001 else SubViewport.UPDATE_DISABLED
 	var steps := 76 if eye_distance > width*2.7 else 64
 	if fire + cap_fire > 0.004:
 		steps = 88 if eye_distance > width*2.7 else 104
@@ -301,10 +316,59 @@ func advance(age: float, eye_distance: float) -> void:
 	_material.set_shader_parameter("weather", Vector3(0.0,float(conditions.y),float(conditions.x)))
 	_material.set_shader_parameter("bounds_min", box_min)
 	_material.set_shader_parameter("bounds_max", box_max)
-	_material.set_shader_parameter("world_scale",lerpf(unit,maxf(unit,width/39.0),0.80))
+	# Match extinction to the rendered volume, including while it is travel-limited.
+	var rendered_unit := unit*travel_scale
+	_material.set_shader_parameter("world_scale",lerpf(rendered_unit,maxf(rendered_unit,width/39.0),0.80))
 	_material.set_shader_parameter("discharge", _discharge(age, phase, crown))
 	_material.set_shader_parameter("dust_weight", lerpf(1.85,0.94,style)*(2.3 if underground else 1.0))
 	_material.set_shader_parameter("heat_gain", lerpf(0.74,1.17,style)*(0.23 if underground else (1.47 if thermal else 1.0)))
+
+func _soft_limit(value: float, limit: float) -> float:
+	var lower := minf(value,limit)
+	var blend := lower/maxf(maxf(value,limit),0.0001)
+	return lower/pow(1.0+blend*blend*blend,1.0/3.0)
+
+func _update_wake(age: float, heat_age: float, front_radius: float, strength: float) -> AABB:
+	# The dust gradually falls behind the moving front and settles in place.
+	var settle_distance := profile.front_radius*3.2
+	var crest := settle_distance*(1.0-exp(-heat_age*CLOUD_TRAVEL_SPEED/settle_distance))
+	if crest <= 0.9 or strength <= 0.002:
+		_material.set_shader_parameter("wake_shape",Vector4.ZERO)
+		return AABB()
+
+	var strength_in_weather := strength*(0.46 if conditions.y == 1 else 1.0)
+	var limit := profile.front_radius
+	var tier := float(profile.tier)/6.0
+	var height := profile.dust_height*1.23*(1.0+profile.ground_dust*0.65)
+	height *= (0.35+0.65*smoothstep(0.0,limit*0.6,crest))*(1.0+(1.0-strength_in_weather)*0.64)
+	var spacing := TAU*crest/float(36+profile.tier*8)
+	var width := minf(maxf(0.45,height*1.38),maxf(0.52,spacing*0.72))
+	var radius := maxf(0.0,crest-maxf(width*1.45,spacing*0.70))
+	var half_band := maxf(width*3.1,spacing*0.81)
+	var density := smoothstep(0.9,minf(limit*0.34,14.0),crest)*pow(strength_in_weather,0.82)
+	density *= lerpf(1.58,2.45,tier)
+	density *= smoothstep(0.002,0.013,strength)
+	var drift := wind*minf(age*0.28,1.0+crest*0.005)
+	var center := Vector2(_origin.x,_origin.z)+drift
+	var extent := radius+half_band
+	var near_xz := (center.abs()-Vector2.ONE*extent).max(Vector2.ZERO)
+	var far_xz := center.abs()+Vector2.ONE*extent
+	var floor_min := -far_xz.length_squared()/12742000.0
+	var floor_max := -near_xz.length_squared()/12742000.0
+	for crater: Vector4 in terrain_craters:
+		floor_min -= crater.w
+		floor_max += crater.w*0.183
+	floor_min += minf(terrain_heave.w,0.0)*1.11
+	floor_max += maxf(terrain_heave.w,0.0)*1.11
+	var bounds := AABB(Vector3(center.x-extent,floor_min-height*0.25,center.y-extent),
+		Vector3(extent*2.0,floor_max-floor_min+height*2.5,extent*2.0))
+	_material.set_shader_parameter("wake_shape",Vector4(radius,half_band,height,density))
+	_material.set_shader_parameter("wake_center",center)
+	_material.set_shader_parameter("wake_vertical",Vector2(bounds.position.y,bounds.end.y))
+	_material.set_shader_parameter("wake_reach",Vector4(_origin.x,_origin.y,_origin.z,front_radius))
+	_material.set_shader_parameter("terrain_heave",terrain_heave)
+	_material.set_shader_parameter("wake_age",age)
+	return bounds
 
 func _discharge(seconds: float, phase: float, maturity: float) -> Vector3:
 	if profile.tier < 4 or phase < 0.70 or phase > 9.0:

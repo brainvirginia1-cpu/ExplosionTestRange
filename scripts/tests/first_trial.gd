@@ -387,8 +387,9 @@ func _exercise_effect_scale(scene: RangeScene) -> void:
 		await _wait_age(burst, 0.54)
 		_expect(burst._volume.visible and burst._volume.mesh is BoxMesh and burst._volume.scale.x > burst.profile.fire_radius,
 			"world-space combustion volume covers the evolving effect")
-		_expect(burst.dust_front.visible and burst.dust_front.multimesh.instance_count >= 30,
-			"airborne dust ring is visible at %s" % burst.profile.display_yield)
+		var wake: Vector4 = burst._volume.material_override.get_shader_parameter("wake_shape")
+		_expect(wake.x > 0.0 and wake.w > 0.0,
+			"the shared volume contains a ground dust ring at %s" % burst.profile.display_yield)
 		if _capture:
 			await _save("14-scale-1t" if value == 1000.0 else "15-scale-100t")
 		if value == 100000.0:

@@ -26,9 +26,7 @@ uniform int burst_kind;
 uniform vec4 terrain_rect;
 uniform vec3 terrain_vertical;
 uniform vec2 ground_dust; // radius in cloud coordinates, density
-uniform vec4 terrain_craters[16];
-uniform int terrain_crater_count;
-uniform vec4 terrain_heave;
+#include "res://assets/shaders/explosion_terrain.gdshaderinc"
 
 #include "res://assets/shaders/mushroom_flame.gdshaderinc"
 #include "res://assets/shaders/explosion_atlas.gdshaderinc"
@@ -37,7 +35,7 @@ uniform vec4 terrain_heave;
 
 float cloud_lobe(vec3 point, vec3 radius) {
 	float distance = length(point/radius);
-	return 1.0-smoothstep(0.55,1.06,distance);
+	return 1.0-smoothstep(0.43,1.15,distance);
 }
 
 // Turbulent lobes grow and rise from the origin, leaving a cooling wake.
@@ -59,11 +57,13 @@ vec3 rising_burst(vec3 position, vec3 curl, float detail) {
 	vec2 wing = turn*(0.056+0.088*expansion);
 	vec3 side_a = p-vec3(wing.x,0.05+0.065*lift,wing.y);
 	vec3 side_b = p+vec3(wing.x*0.89,0.06,wing.y*1.14);
-	float billows = max(cloud_lobe(side_a,vec3(broad*0.65,height*0.71,broad*0.71))*0.86,
-		cloud_lobe(side_b,vec3(broad*0.70,height*0.68,broad*0.62))*0.75);
+	float lobe_a = cloud_lobe(side_a,vec3(broad*0.65,height*0.71,broad*0.71))*0.86;
+	float lobe_b = cloud_lobe(side_b,vec3(broad*0.70,height*0.68,broad*0.62))*0.75;
+	float billows = 1.0-(1.0-lobe_a)*(1.0-lobe_b);
 	float trunk = cloud_lobe(p+vec3(0.003,0.23*lift,0.004),vec3(broad*0.55,0.18+0.21*lift,broad*0.59));
 	trunk *= smoothstep(ground_level-0.024,ground_level+0.070,position.y);
-	float gas = max(main,billows)+trunk*0.52*lift;
+	float gas = 1.0-(1.0-main)*(1.0-billows);
+	gas += trunk*0.52*lift*(1.0-gas*0.63);
 	float heat = cloud_lobe(p-vec3(0.0,0.015,0.0),vec3(broad*0.91,height*0.91,broad*0.83));
 	heat = max(heat,billows*0.51)*exp(-age*2.65);
 	heat *= 0.70+0.82*smoothstep(0.32,0.76,detail+curl.y*0.15);
@@ -142,7 +142,7 @@ vec4 thermal_plume(vec3 p, vec3 curl, float detail, float surface_distance) {
 }
 
 // The smoke cap and its rising stem share the same curl field.
-vec2 atmospheric_cloud(vec3 pos, vec3 curl, float phase) {
+vec2 atmospheric_cloud(vec3 pos, vec3 curl, float detail, float phase) {
 	float rise = 1.0-exp(-phase*0.74);
 	float h = 0.30+0.39*rise;
 	vec2 center = vec2(0.50+0.045*rise,0.50);
@@ -159,41 +159,19 @@ vec2 atmospheric_cloud(vec3 pos, vec3 curl, float phase) {
 	q.y += curl.x*0.044*opening*smoothstep(0.06,0.29,radius);
 	float dome = length(vec3(q.x/dome_width,(q.y-h)/mix(0.087,0.155-0.015*thermonuclear,opening),q.z/(dome_width*0.94)));
 	float lip = length(vec2((radius-mix(0.058,0.208,opening)-0.019*rolls)/mix(0.064,0.110,opening),(q.y-h+0.039)/0.102));
-	float hood = 1.0-smoothstep(0.82,1.04,min(lip,dome));
+	float erosion = (0.49-detail)*0.40 + curl.z*0.11;
+	float cap = 1.0-smoothstep(0.59,1.19,dome+erosion);
+	float roll = 1.0-smoothstep(0.54,1.16,lip+erosion*0.84);
+	float hood = 1.0-(1.0-cap)*(1.0-roll*0.76);
 	if (thermonuclear>0.5) {
 		float lower_roll = length(vec2((radius-0.22*opening-0.018*rolls)/0.107,(q.y-h+0.075)/0.061));
-		hood = max(hood,(1.0-smoothstep(0.70,1.10,lower_roll))*opening*0.85);
+		hood += (1.0-hood)*(1.0-smoothstep(0.54,1.16,lower_roll+erosion))*opening*0.72;
 	}
 	vec2 axis = q.xz+vec2(0.060,0.025)*(h-q.y)+0.013*sin(q.y*19.0+vec2(1.0,2.0)+phase*0.31);
 	float stem_width = 0.045+0.046*pow(abs(2.0*clamp(q.y/h,0.0,1.0)-1.0),1.5);
 	float stem = (1.0-smoothstep(stem_width*0.65,stem_width*1.32,length(axis)))
 		*smoothstep(-0.02,0.05,q.y)*(1.0-smoothstep(h-0.015,h+0.07,q.y));
 	return vec2(hood,stem);
-}
-
-float terrain_height(vec2 p) {
-	float height = -dot(p,p)/12742000.0;
-	for (int i=0;i<terrain_crater_count;i++) {
-		vec4 region = terrain_craters[i];
-		vec2 delta = p-region.xy;
-		float distance = length(delta);
-		if (distance>=region.z*1.36) { continue; }
-		float angle = atan(delta.y,delta.x+0.00001);
-		float boundary = 1.0+sin(angle*5.0)*0.045+cos(angle*7.0)*0.022;
-		float r = distance/(region.z*boundary);
-		float floor_depth = -region.w*pow(max(1.0-r*r,0.0),1.22);
-		float lip = (r-0.94)*10.0;
-		float rim = exp(-lip*lip)*region.w*(0.14+sin(angle*9.0)*0.043);
-		height += floor_depth+rim*(1.0-smoothstep(1.07,1.26,r));
-	}
-	if (terrain_heave.z>0.0) {
-		vec2 delta = p-terrain_heave.xy;
-		float r = length(delta)/terrain_heave.z;
-		float angle = atan(delta.y,delta.x+0.00001);
-		float ribs = sin(angle*7.0+r*6.0)*0.11*smoothstep(0.0,0.34,r);
-		height += terrain_heave.w*(1.0-smoothstep(0.11,1.0,r))*(1.0+ribs);
-	}
-	return height;
 }
 
 vec2 ignition_cloud(vec3 p, vec3 curl, float detail) {
@@ -252,7 +230,7 @@ void fragment() {
 	float mature = crown*smoothstep(0.20,3.10,age);
 	float formed = mushroom*smoothstep(0.75,2.80,age);
 	if (mature>0.001) {
-		vec2 cap = atmospheric_cloud(cloud_pos,curl,age);
+		vec2 cap = atmospheric_cloud(cloud_pos,curl,local_detail,age);
 		// Let ground dust settle below the stem as the crown separates.
 		float height_mask = smoothstep(0.07,0.39,cloud_pos.y);
 		float clear_view = smoothstep(0.06,0.95,mature);
@@ -280,8 +258,9 @@ void fragment() {
 		float radius = length(offset+curl.xz*0.105);
 		float expansion = 1.0-exp(-age*0.77);
 		float edge = 0.18+(0.77+0.045*thermonuclear)*expansion+(local_detail-0.5)*0.10;
-		float sheet = 1.0-smoothstep(edge-0.14,edge+0.045,radius);
-		float crest = exp(-pow((radius-edge+0.12)/0.13,2.0));
+		float sheet = 1.0-smoothstep(edge-0.19,edge+0.095,radius);
+		float crest_distance = (radius-edge+0.12)/0.13;
+		float crest = exp(-crest_distance*crest_distance);
 		float folds = 0.52+0.71*smoothstep(0.31,0.72,local_detail+curl.z*0.18);
 		float low_height = max(surface_distance,0.0)/max(dust_depth,0.01);
 		float settled = mix(1.0,0.48,smoothstep(1.45,6.7,age));
@@ -296,8 +275,9 @@ void fragment() {
 	if (ground_dust.y > 0.001 && surface_distance > -dust_depth*0.20 && surface_distance < dust_depth*3.4) {
 		vec2 offset = cloud_pos.xz-0.5+curl.xz*ground_dust.x*0.17;
 		float radius = length(offset)/max(ground_dust.x,0.001);
-		float edge = 1.0-smoothstep(0.74,1.07,radius);
-		float roll = exp(-pow((radius-0.79)/0.16,2.0));
+		float edge = 1.0-smoothstep(0.64,1.14,radius);
+		float roll_distance = (radius-0.79)/0.16;
+		float roll = exp(-roll_distance*roll_distance);
 		float local_height = max(surface_distance,0.0)/dust_depth;
 		float ground_sheet = exp(-local_height*2.40);
 		float billowing_edge = exp(-local_height*(1.12+local_detail*0.60));
@@ -319,6 +299,7 @@ void fragment() {
 	float edge_noise = mix(folds,fine,0.37);
 	float eroded = max(0.0,field.r-wind_erosion*(0.24+0.50*(1.0-edge_noise)));
 	float dust = max(0.0,field.b-wind_erosion*(0.07+0.21*(1.0-edge_noise)));
+	float dust_folds = mix(0.67,1.20,smoothstep(0.18,0.82,local_detail*0.76+fine*0.24));
 	COLOR = vec4(eroded*filaments*wind_dilution*1.43,field.g*(0.80+fine*0.44),
-		dust*filaments*wind_dilution,thermal_field.a*wind_dilution);
+		dust*dust_folds*wind_dilution,thermal_field.a*wind_dilution);
 }

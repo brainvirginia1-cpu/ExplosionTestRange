@@ -25,6 +25,7 @@ The main menu shows a paused 3D explosion. Open the Graphics tab to see changes 
 | --- | --- |
 | Left click on ground | Set the source or use the selected editor tool |
 | Hold right mouse button | Look around |
+| Mouse wheel | Zoom in or out |
 | WASD · Q / E · Shift | Move · change altitude in free camera · move faster |
 | Space · R | Detonate · reset |
 | Esc | Pause, open settings, or return to the main menu |

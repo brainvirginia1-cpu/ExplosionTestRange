@@ -16,15 +16,18 @@ void sky() {
 	float high_air = smoothstep(650.0,11600.0,height);
 	float relative_elevation = d.y+sqrt(height/3185500.0);
 	float elevation = max(relative_elevation,0.0);
-	vec3 horizon = vec3(0.71, 0.66, 0.56);
-	vec3 blue = mix(vec3(0.40,0.43,0.44),vec3(0.099,0.26,0.44),high_air);
+	float clear_day = (1.0-night)*(1.0-rain);
+	vec3 horizon = mix(vec3(0.71,0.66,0.56),vec3(0.26,0.48,0.72),clear_day);
+	vec3 low_blue = mix(vec3(0.40,0.43,0.44),vec3(0.065,0.25,0.57),clear_day);
+	vec3 blue = mix(low_blue,vec3(0.099,0.26,0.44),high_air);
 	vec3 color = mix(horizon, blue, pow(smoothstep(0.0, 0.90, elevation), 0.50));
 	if (relative_elevation < 0.0) {
 		color = mix(horizon, vec3(0.27, 0.224, 0.176), smoothstep(0.0, 0.55, -relative_elevation));
 	}
 	vec3 direction = normalize(weather_sun);
 	float sunlight = max(0.0, dot(d, direction));
-	color += vec3(0.55, 0.27, 0.10) * pow(sunlight, 10.0);
+	vec3 halo = mix(vec3(0.55,0.27,0.10),vec3(0.22,0.16,0.10),clear_day);
+	color += halo * pow(sunlight,mix(10.0,24.0,clear_day));
 	color += vec3(3.7, 2.5, 1.32) * smoothstep(0.9984, 0.99965, sunlight);
 
 	vec3 overcast = mix(vec3(0.342,0.346,0.350),vec3(0.30,0.35,0.40),high_air);

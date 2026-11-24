@@ -5,6 +5,8 @@ uniform sampler3D turbulence : filter_linear, repeat_enable;
 uniform sampler2D scene_depth : hint_depth_texture, filter_nearest, repeat_disable;
 uniform vec3 bounds_min;
 uniform vec3 bounds_max;
+uniform vec3 proxy_min;
+uniform vec3 proxy_max;
 uniform float world_scale;
 uniform float wind_visibility = 1.0;
 uniform float age;
@@ -27,11 +29,14 @@ varying vec3 surface_world;
 #include "res://assets/shaders/mushroom_flame.gdshaderinc"
 
 void vertex() {
-	surface_world = (MODEL_MATRIX*vec4(VERTEX,1.0)).xyz;
+	surface_world = mix(proxy_min,proxy_max,VERTEX+vec3(0.5));
+	POSITION = PROJECTION_MATRIX*VIEW_MATRIX*vec4(surface_world,1.0);
 }
 
 #include "res://assets/shaders/explosion_atlas.gdshaderinc"
 #include "res://assets/shaders/explosion_wind.gdshaderinc"
+#include "res://assets/shaders/explosion_terrain.gdshaderinc"
+#include "res://assets/shaders/explosion_wake.gdshaderinc"
 
 vec4 volume(vec3 p) {
 	if (any(lessThan(p,vec3(0))) || any(greaterThan(p,vec3(1)))) { return vec4(0); }
@@ -59,21 +64,26 @@ vec3 lightning(vec3 p) {
 
 void fragment() {
 	vec3 ray = normalize(surface_world-CAMERA_POSITION_WORLD);
-	vec3 inverse_ray = (2.0*step(vec3(0.0),ray)-1.0)/max(abs(ray),vec3(0.00001));
-	vec3 a = (bounds_min-CAMERA_POSITION_WORLD)*inverse_ray;
-	vec3 b = (bounds_max-CAMERA_POSITION_WORLD)*inverse_ray;
-	vec3 lo = min(a,b), hi = max(a,b);
-	float start = max(0.0,max(lo.x,max(lo.y,lo.z)));
-	float end = min(hi.x,min(hi.y,hi.z));
-	vec4 opaque = INV_PROJECTION_MATRIX*vec4(SCREEN_UV*2.0-1.0,texture(scene_depth,SCREEN_UV).r,1.0);
-	end = min(end,length(opaque.xyz/opaque.w));
-	if (end <= start) { discard; }
+	vec3 inverse_ray = safe_inverse(ray);
+	vec3 eye = CAMERA_POSITION_WORLD;
+	float raw_depth = texture(scene_depth,SCREEN_UV).r;
+	vec4 opaque = INV_PROJECTION_MATRIX*vec4(SCREEN_UV*2.0-1.0,raw_depth,1.0);
+	float opaque_end = raw_depth > 0.0 ? length(opaque.xyz/opaque.w) : 1e9;
+	vec2 cloud = box_span(eye,inverse_ray,bounds_min,bounds_max);
+	cloud = vec2(max(cloud.x,0.0),min(cloud.y,opaque_end));
+	if (wind_visibility <= 0.001) { cloud = vec2(1e9,-1e9); }
+	vec4 wake = wake_spans(eye,ray,inverse_ray,opaque_end);
+	vec3 starts = vec3(cloud.x,wake.x,wake.z);
+	vec3 ends = vec3(cloud.y,wake.y,wake.w);
+	float wake_steps = clamp(float(steps)*0.31,22.0,34.0);
+	vec3 strides = max((ends-starts)/vec3(float(steps),wake_steps,wake_steps),vec3(0.00001));
+	// Empty intervals must not contribute samples or restrict the valid intervals.
+	starts = mix(vec3(1e9),starts,lessThan(starts,ends));
+	float cursor = min(starts.x,min(starts.y,starts.z));
+	if (cursor == 1e9) { discard; }
 	vec3 span = bounds_max-bounds_min;
 	vec3 light_ray = normalize(sun_direction/span);
-	float stride = (end-start)/float(steps);
 	float jitter = fract(52.9829189*fract(dot(FRAGCOORD.xy,vec2(0.06711056,0.00583715))));
-	vec3 p = (CAMERA_POSITION_WORLD+ray*(start+stride*(0.42+0.16*jitter))-bounds_min)/span;
-	vec3 step_size = ray*stride/span;
 	vec3 sum = vec3(0.0);
 	float transmission = 1.0;
 	float fade = 1.0-smoothstep(0.58,1.0,elapsed_fraction);
@@ -81,31 +91,50 @@ void fragment() {
 	float high_air = smoothstep(650.0,11600.0,view_altitude);
 	vec3 night_ambient = mix(vec3(0.045,0.044,0.042),vec3(0.026,0.035,0.053),high_air);
 	vec3 night_direct = mix(vec3(0.15,0.148,0.143),vec3(0.12,0.16,0.24),high_air);
-	float density_at_camera = start < 0.001 ?
-		occluder((CAMERA_POSITION_WORLD-bounds_min)/span) : 0.0;
-	float enclosed = smoothstep(0.30,1.15,density_at_camera)*fade;
-	for (int i=0;i<steps;i++) {
-		vec4 d = volume(p);
-		if (d.r+d.b+d.a>0.009) {
+	float density_at_camera = cloud.x == 0.0 && cloud.y > 0.0 ? occluder((eye-bounds_min)/span) : 0.0;
+	float enclosed = smoothstep(0.30,1.15,density_at_camera)*fade*wind_visibility;
+	float cloud_extinction = 0.83*fade*wind_visibility/max(world_scale,0.01);
+	float wake_extinction = 1.42/max(min(wake_shape.z,wake_shape.y),0.12);
+	vec3 ambient = mix(vec3(0.135,0.120,0.111),night_ambient,weather.z);
+	vec3 sun = mix(vec3(0.77,0.70,0.61),night_direct,weather.z)*(1.0-weather.y*0.43);
+	// Composite both dust sources and the smoke in camera-to-background order.
+	// The three intervals let the march skip the empty area inside the ground ring.
+	for (int i=0;i<steps+80;i++) {
+		bvec3 active = bvec3(cursor>=starts.x && cursor<ends.x,cursor>=starts.y && cursor<ends.y,cursor>=starts.z && cursor<ends.z);
+		vec3 upcoming = mix(vec3(1e9),starts,lessThan(vec3(cursor),starts));
+		vec3 stops = mix(upcoming,min(ends,vec3(cursor)+strides),active);
+		float next = min(stops.x,min(stops.y,stops.z));
+		if (next == 1e9 || next <= cursor) { break; }
+		float stride = next-cursor;
+		float travel = cursor+stride*(0.30+0.40*jitter);
+		cursor = next;
+		if (!any(active)) { continue; }
+		vec3 world = eye+ray*travel;
+		vec3 p = (world-bounds_min)/span;
+		vec4 d = active.x ? volume(p) : vec4(0.0);
+		float wake_soil = active.y || active.z ? wake_density(world)*wake_shape.w : 0.0;
+		if (d.r+d.b+d.a+wake_soil>0.0005) {
 			float grain = texture(turbulence,p*3.5+variation+vec3(0,-age*0.037,0)).r;
-			float gas = d.r;
-			float soil = d.b*dust_weight*(1.0-weather.y*0.68);
-			float haze = d.a;
+			float gas = d.r*cloud_extinction;
+			float soil = d.b*dust_weight*(1.0-weather.y*0.68)*cloud_extinction+wake_soil*wake_extinction;
+			float haze = d.a*cloud_extinction;
 			float density = gas+soil+haze;
 			// Integrate the cloud's own density in the direction of the scene light.
 			float shadow = occluder(p+light_ray*0.028)*0.46
 				+occluder(p+light_ray*0.077)*0.58
 				+occluder(p+light_ray*0.154)*0.78
 				+occluder(p+light_ray*0.265)*0.67;
+			if (wake_soil > 0.0) {
+				shadow += wake_density(world+sun_direction*wake_shape.z*0.31)*wake_shape.w*0.56;
+				shadow += wake_density(world+sun_direction*wake_shape.z*0.84)*wake_shape.w*0.47;
+			}
 			float light = exp(-shadow*1.38);
-			vec3 ambient = mix(vec3(0.135,0.120,0.111),night_ambient,weather.z);
-			vec3 sun = mix(vec3(0.77,0.70,0.61),night_direct,weather.z)*(1.0-weather.y*0.43);
-			vec3 smoke_color = ambient*0.68+sun*light*(0.80+grain*0.20);
-			vec3 soil_color = (ambient*0.88+sun*light)*vec3(0.71,0.49,0.30);
+			vec3 smoke_color = (ambient*0.50+sun*light*(0.80+grain*0.24))*vec3(0.88,0.93,1.0);
+			vec3 soil_color = (ambient*1.40+sun*mix(light,1.0,0.23))*vec3(0.61,0.46,0.31);
 
 			float heat = d.g*heat_gain;
 			float flame_heat = 0.0;
-			if (ground_light+cap_fire > 0.004) {
+			if (active.x && ground_light+cap_fire > 0.004) {
 				vec3 flame_pos = upwind_position(p);
 				vec3 flame = mushroom_flame(flame_pos,variation,age,ground_level,flame_height);
 				flame_heat = dot(flame,vec3(ground_light*1.55,ground_light*1.24,cap_fire*1.47));
@@ -122,20 +151,19 @@ void fragment() {
 			float flash = flash_light*exp(-length(at_base)*0.9);
 			vec3 inner_light = vec3(1.42,0.34,0.047)*(hot_glow+0.73*flash);
 			vec3 color = (gas*(mix(smoke_color+inner_light,fire,smoothstep(0.065,0.72,heat)))
-				+soil*(soil_color+inner_light*0.65)+haze*(ambient+sun*light*0.91))/max(density,0.001);
+				+soil*(soil_color+inner_light*0.65)+haze*(ambient+sun*light*0.91))/max(density,0.0000001);
 			if (discharge.x>0.002) {
-				float exposed = smoothstep(0.035,0.16,gas)*(1.0-smoothstep(0.25,0.58,gas));
+				float exposed = smoothstep(0.035,0.16,d.r)*(1.0-smoothstep(0.25,0.58,d.r));
 				color += lightning(upwind_position(p))*exposed;
 			}
-			float opacity = 1.0-exp(-density*stride/max(world_scale,0.01)*0.83*fade);
+			float opacity = 1.0-exp(-density*stride);
 			sum += transmission*opacity*color;
 			transmission *= 1.0-opacity;
 			if (transmission<0.008) { break; }
 		}
-		p += step_size;
 	}
 	float cloud_opacity = 1.0-transmission;
 	float obscured = enclosed*0.986;
-	ALPHA = mix(cloud_opacity,1.0,obscured)*wind_visibility;
+	ALPHA = mix(cloud_opacity,1.0,obscured);
 	ALBEDO = mix(sum/max(cloud_opacity,0.0001),vec3(0.045,0.041,0.037),obscured);
 }

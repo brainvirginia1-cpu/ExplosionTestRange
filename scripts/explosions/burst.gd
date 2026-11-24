@@ -13,7 +13,6 @@ const AIR_FRONT := preload("res://assets/shaders/atmospheric_shell.gdshader")
 const Propagation := preload("res://scripts/core/propagation.gd")
 const LargePlume := preload("res://scripts/explosions/large_plume.gd")
 const AcousticEvent := preload("res://scripts/audio/acoustic_event.gd")
-const WaveDust := preload("res://scripts/explosions/wave_dust.gd")
 const GRIT := preload("res://assets/sounds/burst_grit_tail.wav")
 const THUNDER := [
 	preload("res://assets/sounds/burst_thunder_tail.wav"),
@@ -47,16 +46,34 @@ var seed := 4207
 var floor_height: Callable
 var terrain_craters: PackedVector4Array
 var occlusion_material: ShaderMaterial
-var dust_front: WaveDust
 var age := 0.0
 var front_radius := 0.0
-# The rendering front keeps travelling after the gameplay event has finished propagating.
+# Uncapped travel on the clock used by the gameplay front.
 func visual_radius() -> float:
 	return maxf(0.0,age-ignition_delay)*Propagation.SPEED
 
 func visual_strength() -> float:
 	var travel := visual_radius() / profile.front_radius
 	return (1.0 - smoothstep(0.8, 1.0, age / profile.lifetime)) / (1.0 + travel * travel)
+
+# The drawn front uses an authored ease-out independent of hit and audio timing.
+func rendered_front_radius() -> float:
+	var elapsed := maxf(0.0,age-ignition_delay)
+	var boost := lerpf(0.44,1.45,profile.visual_growth)
+	var easing_time := lerpf(0.14,0.87,profile.visual_growth)
+	return visual_radius()*(1.0+boost/(1.0+elapsed/easing_time))
+
+func _rendered_front_duration() -> float:
+	return lerpf(0.24,4.20,pow(profile.visual_growth,1.34))
+
+func rendered_front_impulse() -> float:
+	var elapsed := age-ignition_delay
+	if elapsed <= 0.0:
+		return 0.0
+	var duration := _rendered_front_duration()
+	var progress := elapsed/duration
+	var attack := smoothstep(0.0,minf(0.058,duration*0.18),elapsed)
+	return attack*exp(-progress*2.18)*(1.0-smoothstep(0.48,1.0,progress))
 
 var _volume: CombustionVolume
 var _audio: AcousticEvent
@@ -125,16 +142,6 @@ func _ready() -> void:
 		_haze.material_override.render_priority = -2
 		(_haze.material_override as ShaderMaterial).set_shader_parameter("turbulence", CombustionVolume.TURBULENCE)
 		_haze.position.y = profile.fire_radius*0.69
-	dust_front = WaveDust.new()
-	dust_front.class_index = profile.tier
-	dust_front.variation_seed = seed
-	dust_front.wind = wind
-	dust_front.sun_direction = sun_direction
-	dust_front.limit = profile.front_radius
-	dust_front.crest_height = profile.dust_height*(1.0+profile.ground_dust*0.65)
-	dust_front.floor_height = floor_height
-	add_child(dust_front)
-
 	if frozen_age >= 0.0:
 		set_process(false)
 		_ejected = true
@@ -255,17 +262,13 @@ func _update_visuals() -> void:
 	_flash.scale = Vector3.ONE * (3.0 + maxf(0.0,hot_age)*16.0) * pow(profile.visual_scale, 0.89)
 	var crest := visual_radius()
 	var strength := visual_strength()
-	dust_front.set_air_reach(global_position,crest)
-	var dust_age := maxf(0.0,hot_age)
-	var dust_crest := dust_age*CombustionVolume.CLOUD_TRAVEL_SPEED
-	dust_front.advance(age, dust_crest, strength * (0.46 if conditions.y==1 else 1.0), (ignition+0.26*afterglow)*strength)
-	_update_air_front(hot_age, crest, strength)
+	_update_air_front(hot_age)
 	(_flash.material_override as ShaderMaterial).set_shader_parameter("intensity", flash * flash)
 	var camera := get_viewport().get_camera_3d()
 	var observer_distance := 0.0 if camera == null else camera.global_position.distance_to(global_position)
 	if _plume != null:
 		_plume.update_plume(age, observer_distance)
-	_volume.advance(age, observer_distance)
+	_volume.advance(age, observer_distance, crest, strength)
 	if _haze != null:
 		var shimmer := smoothstep(0.04,0.26,hot_age)*exp(-maxf(0.0,hot_age) / (profile.heat_duration * 1.75))
 		_haze.visible = shimmer > 0.035 and observer_distance < profile.fire_radius * 24.0
@@ -275,20 +278,18 @@ func _update_visuals() -> void:
 			material.set_shader_parameter("elapsed", age)
 			_haze.scale = Vector3(1.24, 1.16, 1.0) * profile.fire_radius
 
-func _update_air_front(hot_age: float, radius: float, strength: float) -> void:
+func _update_air_front(hot_age: float) -> void:
 	var growth := profile.visual_growth
 	var moisture := 1.0 if conditions.y == 1 else 0.82
-	var vapor_time := 0.20 + 1.80 * pow(growth, 1.22)
-	var progress := hot_age / vapor_time
-	var onset := smoothstep(0.0, minf(0.085, vapor_time * 0.22), hot_age)
-	var vapor := onset * (1.0 - smoothstep(0.16, 1.0, progress))
-	vapor *= pow(strength, 0.62) * moisture * lerpf(0.66, 1.48, growth)
-	var shimmer := onset * strength * lerpf(0.29, 0.70, growth)
-	shimmer *= 1.0 - smoothstep(0.44, 1.0, progress)
-	_air_front.visible = radius > 0.0 and progress < 1.0
+	var progress := hot_age/_rendered_front_duration()
+	var impulse := rendered_front_impulse()
+	_air_front.visible = impulse > 0.0
 	if not _air_front.visible:
 		return
-	# The proxy is slightly oversized; the shader renders the actual game front.
+	var radius := rendered_front_radius()
+	var vapor := impulse*moisture*lerpf(0.72,1.46,growth)
+	var shimmer := impulse*lerpf(0.32,0.74,growth)
+	# The proxy is slightly oversized to enclose the ray-marched shell.
 	_air_front.scale = Vector3.ONE * radius * 1.014
 	var material := _air_front.material_override as ShaderMaterial
 	material.set_shader_parameter("wave_radius", radius)
